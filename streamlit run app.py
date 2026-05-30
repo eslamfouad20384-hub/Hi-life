@@ -2,65 +2,82 @@ import streamlit as st
 import requests
 import pandas as pd
 import numpy as np
+import time
 
 st.set_page_config(layout="wide")
-st.title("🚀 Ultra Hybrid Scanner (Stable + Fixed Version)")
+st.title("🚀 Full Market Engine (5000 Coins AI Pipeline)")
 
 # =========================
-# 📊 Coinbase Symbols
+# 🌍 1. UNIVERSE (5000+ coins)
 # =========================
-def get_cb_symbols():
-    url = "https://api.exchange.coinbase.com/products"
-    r = requests.get(url).json()
-
-    coins = []
-    for item in r:
-        if item.get("quote_currency") == "USD":
-            coins.append(item.get("base_currency"))
-
-    return list(set(coins))
-
-
-# =========================
-# 📊 CryptoCompare Symbols
-# =========================
-def get_cc_symbols():
+def get_cc_universe():
     url = "https://min-api.cryptocompare.com/data/all/coinlist"
     r = requests.get(url).json()
 
-    coins = []
-
     data = r.get("Data", {})
-    for k in data.keys():
-        coins.append(k)
+    coins = list(data.keys())
 
     return coins
 
 
 # =========================
-# 📊 Coinbase Data
+# ⚡ 2. LIGHT DATA (fast check)
 # =========================
-def get_data_cb(symbol):
-    try:
-        url = f"https://api.exchange.coinbase.com/products/{symbol}-USD/candles"
-        r = requests.get(url).json()
+def get_fast_data(symbol):
 
-        if not isinstance(r, list) or len(r) < 100:
+    try:
+        url = "https://min-api.cryptocompare.com/data/pricemultifull"
+        params = {
+            "fsyms": symbol,
+            "tsyms": "USD"
+        }
+
+        r = requests.get(url, params=params).json()
+
+        raw = r.get("RAW", {}).get(symbol, {}).get("USD", {})
+
+        if not raw:
             return None
 
-        df = pd.DataFrame(r, columns=["time","low","high","open","close","volume"])
-        df = df.sort_values("time").reset_index(drop=True)
+        price = raw.get("PRICE", 0)
+        volume = raw.get("VOLUME24HOUR", 0)
+        change = raw.get("CHANGEPCT24HOUR", 0)
 
-        return df.astype(float)
+        return {
+            "price": price,
+            "volume": volume,
+            "change": change
+        }
 
     except:
         return None
 
 
 # =========================
-# 📊 CryptoCompare Data (FIXED)
+# 🧠 LIGHT FILTER (5000 → 200)
 # =========================
-def get_data_cc(symbol):
+def light_filter(data):
+
+    if data is None:
+        return False
+
+    if data["price"] <= 0:
+        return False
+
+    if data["volume"] < 50000:
+        return False
+
+    if abs(data["change"]) < 1:
+        return False
+
+    return True
+
+
+# =========================
+# 📊 OHLC (deep analysis)
+# =========================
+def get_ohlc(symbol):
+
     try:
         url = "https://min-api.cryptocompare.com/data/v2/histohour"
         params = {
@@ -77,29 +94,39 @@ def get_data_cc(symbol):
 
         df = pd.DataFrame(data)
 
-        # 🔥 توحيد الأعمدة
-        if "volumefrom" in df.columns:
-            df["volume"] = df["volumefrom"]
-        elif "volumeto" in df.columns:
-            df["volume"] = df["volumeto"]
-        else:
-            df["volume"] = 0
-
-        # 🔥 ضمان الأعمدة الأساسية
-        for col in ["open", "high", "low", "close"]:
-            if col not in df.columns:
-                df[col] = 0
-
         df = df.sort_values("time").reset_index(drop=True)
 
-        return df.astype(float)
+        df["volume"] = df.get("volumefrom", 0)
+
+        return df
 
     except:
         return None
 
 
 # =========================
-# 📊 Indicators
+# ⚡ DEEP FILTER (200 → 30)
+# =========================
+def deep_filter(df):
+
+    try:
+        avg_vol = df["volume"].mean()
+        volatility = (df["high"].max() - df["low"].min()) / (df["close"].mean() + 1e-9)
+
+        if avg_vol < 10000:
+            return False
+
+        if volatility < 0.04:
+            return False
+
+        return True
+
+    except:
+        return False
+
+
+# =========================
+# 📊 INDICATORS
 # =========================
 def add_indicators(df):
 
@@ -126,38 +153,13 @@ def add_indicators(df):
 
 
 # =========================
-# 🔥 Safe Smart Filter
-# =========================
-def smart_filter(df):
-
-    if df is None or "volume" not in df.columns:
-        return False
-
-    avg_volume = df["volume"].mean()
-
-    if np.isnan(avg_volume):
-        return False
-
-    volatility = (df["high"].max() - df["low"].min()) / (df["close"].mean() + 1e-9)
-
-    if avg_volume < 5000:
-        return False
-
-    if volatility < 0.03:
-        return False
-
-    return True
-
-
-# =========================
-# 🧠 Analysis Engine
+# 🧠 FINAL SCORING
 # =========================
 def analyze(df):
 
     latest = df.iloc[-1]
     score = 0
 
-    # Technical
     if latest["rsi"] < 35:
         score += 15
 
@@ -173,7 +175,6 @@ def analyze(df):
     if latest["volume"] > df["vol_ma"].iloc[-1]:
         score += 10
 
-    # Price action
     low = df["low"].min()
     high = df["high"].max()
 
@@ -197,8 +198,7 @@ def analyze(df):
     if trend:
         score += 5
 
-
-    # ===== Signal mapping =====
+    # ===== SIGNALS =====
     if score >= 80:
         signal = "🔥 قوي جدًا"
     elif score >= 65:
@@ -212,42 +212,59 @@ def analyze(df):
 
 
 # =========================
-# 🚀 Universe Expansion
-# =========================
-def build_universe():
-
-    cb = set(get_cb_symbols())
-    cc = set(get_cc_symbols())
-
-    hidden = list(cc - cb)
-
-    return list(cb), hidden
-
-
-# =========================
-# 🚀 Scanner
+# 🚀 ENGINE PIPELINE
 # =========================
 results = []
 
-if st.button("🚀 Scan Market (Fixed + Hidden Gems)"):
+if st.button("🚀 Run Full Market Engine"):
 
-    cb_coins, hidden_coins = build_universe()
+    coins = get_cc_universe()
 
-    coins = cb_coins + hidden_coins[:50]  # تقليل الضغط
+    st.write(f"🌍 Universe Size: {len(coins)} coins")
+
+    light_pass = []
 
     progress = st.progress(0)
 
-    for i, coin in enumerate(coins):
+    # =========================
+    # 🧠 STAGE 1 (5000 → 200)
+    # =========================
+    for i, coin in enumerate(coins[:2000]):  # حماية من الضغط
 
-        df = get_data_cb(coin)
+        data = get_fast_data(coin)
 
-        if df is None:
-            df = get_data_cc(coin)
+        if light_filter(data):
+            light_pass.append(coin)
+
+        progress.progress((i+1)/2000)
+
+    st.write(f"⚡ After Light Filter: {len(light_pass)} coins")
+
+    # =========================
+    # ⚡ STAGE 2 (200 → 30)
+    # =========================
+    deep_pass = []
+
+    for coin in light_pass[:300]:
+
+        df = get_ohlc(coin)
 
         if df is None:
             continue
 
-        if not smart_filter(df):
+        if deep_filter(df):
+            deep_pass.append(coin)
+
+    st.write(f"📊 After Deep Filter: {len(deep_pass)} coins")
+
+    # =========================
+    # 📊 STAGE 3 (Analysis)
+    # =========================
+    for coin in deep_pass[:30]:
+
+        df = get_ohlc(coin)
+
+        if df is None:
             continue
 
         df = add_indicators(df)
@@ -263,10 +280,11 @@ if st.button("🚀 Scan Market (Fixed + Hidden Gems)"):
                 "Price": df.iloc[-1]["close"]
             })
 
-        progress.progress((i+1)/len(coins))
-
+    # =========================
+    # 🔥 OUTPUT
+    # =========================
     if results:
-        st.success("🔥 Results Loaded Successfully")
+        st.success("🔥 Final Signals Ready")
         st.dataframe(pd.DataFrame(results).sort_values("Score", ascending=False))
     else:
-        st.warning("❌ No setups found")
+        st.warning("❌ No strong signals")
