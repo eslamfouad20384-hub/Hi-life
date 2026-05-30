@@ -5,7 +5,7 @@ import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 
 st.set_page_config(layout="wide")
-st.title("🚀 Ultra Smart Scanner PRO + Risk Management")
+st.title("🚀 Ultra Smart Scanner PRO + Clean Data Filter")
 
 session = requests.Session()
 
@@ -21,7 +21,7 @@ def get_all_products():
         symbols = [
             item["base_currency"]
             for item in r
-            if item["quote_currency"] == "USD"
+            if item.get("quote_currency") == "USD"
         ]
 
         return list(set(symbols))
@@ -30,7 +30,7 @@ def get_all_products():
 
 
 # =========================
-# 📊 MARKET DATA
+# 📊 MARKET DATA (CLEAN VERSION)
 # =========================
 @st.cache_data(ttl=60)
 def get_data(symbol):
@@ -38,11 +38,27 @@ def get_data(symbol):
         url = f"https://api.exchange.coinbase.com/products/{symbol}-USD/candles?granularity=3600"
         r = session.get(url, timeout=10).json()
 
-        if not isinstance(r, list) or len(r) < 100:
+        # ❌ reject invalid API response
+        if not isinstance(r, list) or len(r) < 120:
             return None
 
         df = pd.DataFrame(r, columns=["time","low","high","open","close","volume"])
+
+        # ❌ drop rows with missing values immediately
+        df = df.dropna()
+
+        # ❌ ensure no empty dataframe after cleaning
+        if df.empty:
+            return None
+
         df = df.sort_values("time").reset_index(drop=True)
+
+        # ❌ final validation for numeric consistency
+        for col in ["low", "high", "open", "close", "volume"]:
+            if col not in df.columns:
+                return None
+            if df[col].isna().any():
+                return None
 
         return df.astype(float)
 
@@ -58,7 +74,6 @@ def add_indicators(df):
     df["ema50"] = df["close"].ewm(span=50).mean()
     df["ema200"] = df["close"].ewm(span=200).mean()
 
-    # RSI Wilder
     delta = df["close"].diff()
     gain = np.where(delta > 0, delta, 0)
     loss = np.where(delta < 0, -delta, 0)
@@ -69,21 +84,16 @@ def add_indicators(df):
     rs = avg_gain / (avg_loss + 1e-9)
     df["rsi"] = 100 - (100 / (1 + rs))
 
-    # MACD
     ema12 = df["close"].ewm(span=12).mean()
     ema26 = df["close"].ewm(span=26).mean()
 
     df["macd"] = ema12 - ema26
     df["signal"] = df["macd"].ewm(span=9).mean()
 
-    # Volume
     df["vol_ma"] = df["volume"].rolling(20).mean()
-
-    # Support / Resistance
     df["support"] = df["low"].rolling(20).min()
     df["resistance"] = df["high"].rolling(20).max()
 
-    # ATR (Risk Engine)
     high_low = df["high"] - df["low"]
     high_close = abs(df["high"] - df["close"].shift())
     low_close = abs(df["low"] - df["close"].shift())
@@ -91,18 +101,41 @@ def add_indicators(df):
     tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
     df["atr"] = tr.rolling(14).mean()
 
+    # ❌ remove rows with NaN after indicators
+    df = df.dropna()
+
     return df
 
 
 # =========================
-# 🧠 FILTER
+# 🧠 STRONG FILTER (NO BROKEN DATA ALLOWED)
 # =========================
 def smart_filter(df):
 
-    if df is None or len(df) < 100:
+    # ❌ basic structure check
+    required_cols = ["atr", "volume", "close", "ema50", "ema200", "rsi", "macd"]
+    for col in required_cols:
+        if col not in df.columns:
+            return False
+
+    # ❌ remove incomplete data
+    if df.isnull().any().any():
         return False
 
+    # ❌ not enough candles
+    if len(df) < 120:
+        return False
+
+    # ❌ no zero or negative prices
+    if (df["close"] <= 0).any():
+        return False
+
+    # ❌ weak liquidity filter
     if df["volume"].mean() < 5000:
+        return False
+
+    # ❌ volatility check
+    if pd.isna(df["atr"].iloc[-1]):
         return False
 
     volatility = df["atr"].iloc[-1] / (df["close"].mean() + 1e-9)
@@ -158,7 +191,7 @@ def analyze(df):
 
 
 # =========================
-# 💰 RISK MANAGEMENT (SL / TP / RR)
+# 💰 RISK MANAGEMENT
 # =========================
 def risk_management(df, rr=2):
 
@@ -167,13 +200,11 @@ def risk_management(df, rr=2):
     entry = latest["close"]
     atr = latest["atr"]
 
-    # 🛑 Stop Loss (1.5 ATR)
+    if pd.isna(atr):
+        return None
+
     stop_loss = entry - (1.5 * atr)
-
-    # 🎯 Risk
     risk = entry - stop_loss
-
-    # 🎯 Take Profit
     take_profit = entry + (risk * rr)
 
     return entry, stop_loss, take_profit, rr
@@ -185,19 +216,25 @@ def risk_management(df, rr=2):
 def process_coin(coin):
 
     df = get_data(coin)
-    if df is None:
-        return None
 
-    if not smart_filter(df):
+    # ❌ reject missing or broken data instantly
+    if df is None or df.empty:
         return None
 
     df = add_indicators(df)
+
+    if not smart_filter(df):
+        return None
 
     signal, score = analyze(df)
 
     if score >= 50:
 
-        entry, sl, tp, rr = risk_management(df, rr=2)
+        risk = risk_management(df, rr=2)
+        if risk is None:
+            return None
+
+        entry, sl, tp, rr = risk
 
         return {
             "Symbol": coin,
@@ -220,7 +257,6 @@ results = []
 if st.button("🚀 Scan Market PRO"):
 
     coins = get_all_products()
-
     progress = st.progress(0)
 
     with ThreadPoolExecutor(max_workers=10) as executor:
@@ -234,7 +270,7 @@ if st.button("🚀 Scan Market PRO"):
 
     if results:
         df_res = pd.DataFrame(results).sort_values("Score", ascending=False)
-        st.success("🔥 Strong Signals Found")
+        st.success("🔥 Strong Clean Signals Found")
         st.dataframe(df_res, use_container_width=True)
     else:
-        st.warning("❌ No setups found")
+        st.warning("❌ No clean setups found")
