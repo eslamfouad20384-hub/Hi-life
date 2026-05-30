@@ -4,43 +4,23 @@ import pandas as pd
 import numpy as np
 
 st.set_page_config(layout="wide")
-st.title("🚀 Ultra Hybrid Market Scanner + Hidden Gems")
+st.title("🚀 Ultra Smart Market Scanner (Hybrid + Signal Bands)")
 
 # =========================
-# 📊 Coinbase Symbols
-# =========================
-def get_cb_symbols():
+def get_all_products():
     url = "https://api.exchange.coinbase.com/products"
     r = requests.get(url).json()
 
-    coins = []
+    symbols = []
     for item in r:
         if item["quote_currency"] == "USD":
-            coins.append(item["base_currency"])
+            symbols.append(item["base_currency"])
 
-    return list(set(coins))
-
-
-# =========================
-# 📊 CryptoCompare Symbols (Hidden Universe)
-# =========================
-def get_cc_symbols():
-    url = "https://min-api.cryptocompare.com/data/all/coinlist"
-    r = requests.get(url).json()
-
-    coins = []
-
-    if "Data" in r:
-        for k in r["Data"].keys():
-            coins.append(k)
-
-    return coins
+    return list(set(symbols))
 
 
 # =========================
-# 📊 OHLC Data (Coinbase)
-# =========================
-def get_data_cb(symbol):
+def get_data(symbol):
     url = f"https://api.exchange.coinbase.com/products/{symbol}-USD/candles"
     r = requests.get(url).json()
 
@@ -48,34 +28,12 @@ def get_data_cb(symbol):
         return None
 
     df = pd.DataFrame(r, columns=["time","low","high","open","close","volume"])
+
     df = df.sort_values("time").reset_index(drop=True)
 
     return df.astype(float)
 
 
-# =========================
-# 📊 OHLC Data (CryptoCompare)
-# =========================
-def get_data_cc(symbol):
-    url = "https://min-api.cryptocompare.com/data/v2/histohour"
-
-    params = {
-        "fsym": symbol,
-        "tsym": "USD",
-        "limit": 200
-    }
-
-    r = requests.get(url, params=params).json()
-
-    if "Data" not in r or "Data" not in r["Data"]:
-        return None
-
-    df = pd.DataFrame(r["Data"]["Data"])
-    return df
-
-
-# =========================
-# 📊 Indicators
 # =========================
 def add_indicators(df):
 
@@ -86,7 +44,10 @@ def add_indicators(df):
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
 
-    rs = gain.rolling(14).mean() / (loss.rolling(14).mean() + 1e-9)
+    avg_gain = gain.rolling(14).mean()
+    avg_loss = loss.rolling(14).mean()
+    rs = avg_gain / (avg_loss + 1e-9)
+
     df["rsi"] = 100 - (100 / (1 + rs))
 
     ema12 = df["close"].ewm(span=12).mean()
@@ -96,17 +57,17 @@ def add_indicators(df):
     df["signal"] = df["macd"].ewm(span=9).mean()
 
     df["vol_ma"] = df["volume"].rolling(20).mean()
+
     df["support"] = df["low"].rolling(20).min()
 
     return df
 
 
 # =========================
-# 🔥 Smart Filter
-# =========================
 def smart_filter(df):
 
     avg_volume = df["volume"].mean()
+
     volatility = (df["high"].max() - df["low"].min()) / (df["close"].mean() + 1e-9)
 
     if avg_volume < 5000:
@@ -118,8 +79,6 @@ def smart_filter(df):
     return True
 
 
-# =========================
-# 🧠 Analysis Engine
 # =========================
 def analyze(df):
 
@@ -164,7 +123,8 @@ def analyze(df):
     if trend:
         score += 5
 
-    # ===== Signal mapping =====
+
+    # ===== Signal mapping (UPDATED) =====
     if score >= 80:
         signal = "🔥 قوي جدًا"
     elif score >= 65:
@@ -178,40 +138,19 @@ def analyze(df):
 
 
 # =========================
-# 🚀 Universe Expansion (IMPORTANT)
-# =========================
-def build_universe():
-
-    cb = set(get_cb_symbols())
-    cc = set(get_cc_symbols())
-
-    hidden_gems = list(cc - cb)  # 👈 العملات الناقصة
-
-    return list(cb), hidden_gems
-
-
-# =========================
 results = []
 
-if st.button("🚀 Scan Hybrid + Hidden Gems"):
+if st.button("🚀 Scan Market"):
 
-    cb_coins, hidden_coins = build_universe()
-
-    # نستخدم الاثنين
-    coins = cb_coins + hidden_coins[:50]  # تقليل الضغط
+    coins = get_all_products()
 
     progress = st.progress(0)
 
     for i, coin in enumerate(coins):
 
-        # نحاول Coinbase الأول
-        df = get_data_cb(coin)
+        df = get_data(coin)
 
-        # لو فشل نروح CryptoCompare
         if df is None:
-            df = get_data_cc(coin)
-
-        if df is None or len(df) < 100:
             continue
 
         if not smart_filter(df):
@@ -233,7 +172,7 @@ if st.button("🚀 Scan Hybrid + Hidden Gems"):
         progress.progress((i+1)/len(coins))
 
     if results:
-        st.success("🔥 Hybrid + Hidden Gems Results")
+        st.success("🔥 Market Scan Results")
         st.dataframe(pd.DataFrame(results).sort_values("Score", ascending=False))
     else:
         st.warning("❌ No setups found")
